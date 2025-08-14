@@ -9,6 +9,9 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// 引入水印API模块
+const watermarkAPI = require('./watermark-api');
+
 // 启用CORS - 允许任何来源访问
 app.use(cors({
   origin: true,  // 允许任何来源
@@ -20,21 +23,8 @@ app.use(cors({
 // 解析JSON请求体
 app.use(express.json());
 
-// 创建上传目录 - 在Vercel上使用临时目录
-const isVercel = process.env.VERCEL || process.env.VERCEL_ENV || process.env.NOW_REGION;
-const uploadsDir = isVercel
-  ? path.join('/tmp', 'uploads')  // Vercel环境使用/tmp目录
-  : path.join(__dirname, 'uploads');  // 本地开发使用uploads目录
-
-console.log('🌐 环境检测:', {
-  VERCEL: process.env.VERCEL,
-  VERCEL_ENV: process.env.VERCEL_ENV,
-  NOW_REGION: process.env.NOW_REGION,
-  isVercel: isVercel,
-  uploadsDir: uploadsDir
-});
-
-// 确保上传目录存在
+// 创建上传目录
+const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
@@ -95,64 +85,48 @@ const upload = multer({
 // 静态文件服务 - 提供公网访问
 app.use('/files', express.static(uploadsDir));
 
-// 健康检查
-app.get('/api/health', (req, res) => {
+// 根路径处理
+app.get('/', (req, res) => {
   res.json({
     success: true,
-    status: 'running',
-    timestamp: new Date().toISOString(),
     service: 'watermark-upload-backend',
+    status: 'running',
+    endpoints: {
+      health: '/api/health',
+      upload: '/api/upload/public',
+      files: '/files/'
+    },
     version: '1.0.0',
-    environment: isVercel ? 'vercel' : 'local',
-    uploadsDir: uploadsDir,
-    nodeEnv: process.env.NODE_ENV
+    timestamp: new Date().toISOString()
   });
 });
 
-// 调试接口 - 检查文件系统状态
-app.get('/api/debug/filesystem', (req, res) => {
+// 健康检查
+app.get('/api/health', async (req, res) => {
   try {
-    const debugInfo = {
-      uploadsDir: uploadsDir,
-      uploadsDirExists: fs.existsSync(uploadsDir),
-      environment: isVercel ? 'vercel' : 'local',
-      nodeEnv: process.env.NODE_ENV,
-      cwd: process.cwd(),
-      tmpDirExists: fs.existsSync('/tmp'),
-      tmpDirWritable: false
-    };
-
-    // 测试临时目录写入权限
-    try {
-      const testFile = path.join('/tmp', 'test-write.txt');
-      fs.writeFileSync(testFile, 'test');
-      fs.unlinkSync(testFile);
-      debugInfo.tmpDirWritable = true;
-    } catch (e) {
-      debugInfo.tmpWriteError = e.message;
-    }
-
-    // 测试上传目录
-    if (debugInfo.uploadsDirExists) {
-      try {
-        const files = fs.readdirSync(uploadsDir);
-        debugInfo.filesInUploads = files.length;
-        debugInfo.files = files.slice(0, 5); // 只显示前5个文件
-      } catch (e) {
-        debugInfo.readDirError = e.message;
-      }
-    }
-
+    const watermarkHealth = await watermarkAPI.healthCheck();
     res.json({
       success: true,
-      debug: debugInfo
+      status: 'running',
+      timestamp: new Date().toISOString(),
+      service: 'watermark-upload-backend',
+      version: '1.0.0',
+      environment: process.env.NODE_ENV || 'development',
+      uploadsDir: uploadsDir,
+      nodeEnv: process.env.NODE_ENV,
+      watermarkAPI: watermarkHealth
     });
-
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    res.json({
+      success: true,
+      status: 'running',
+      timestamp: new Date().toISOString(),
+      service: 'watermark-upload-backend',
+      version: '1.0.0',
+      environment: process.env.NODE_ENV || 'development',
+      uploadsDir: uploadsDir,
+      nodeEnv: process.env.NODE_ENV,
+      watermarkAPI: { status: 'error', error: error.message }
     });
   }
 });
@@ -171,14 +145,10 @@ app.post('/api/upload/public', upload.single('file'), (req, res) => {
     const baseUrl = req.protocol + '://' + req.get('host');
     const publicUrl = `${baseUrl}/files/${req.file.filename}`;
 
-    // 设置文件过期时间（在Vercel上，临时文件会在函数执行完毕后清理）
-    const expiresAt = isVercel
-      ? new Date(Date.now() + 60 * 60 * 1000).toISOString()  // Vercel上1小时过期
-      : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();  // 本地24小时过期
+    // 设置文件过期时间（24小时）
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
     console.log(`📤 文件上传成功: ${req.file.originalname} -> ${publicUrl}`);
-    console.log(`📁 存储位置: ${req.file.path}`);
-    console.log(`🌐 环境: ${isVercel ? 'Vercel' : 'Local'}`);
 
     const result = {
       success: true,
@@ -188,89 +158,174 @@ app.post('/api/upload/public', upload.single('file'), (req, res) => {
       fileSize: req.file.size,  // 前端期望的字段名
       mimetype: req.file.mimetype,
       uploadTime: new Date().toISOString(),
-      expiresAt: expiresAt,
-      environment: isVercel ? 'vercel' : 'local'
+      expiresAt: expiresAt
     };
 
     res.json(result);
 
-    // 只在非Vercel环境下设置定时删除（Vercel会自动清理临时文件）
-    if (!isVercel) {
-      setTimeout(() => {
-        const filePath = req.file.path;
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-          console.log(`🗑️ 自动删除过期文件: ${req.file.filename}`);
-        }
-      }, 24 * 60 * 60 * 1000);
-    }
+    // 24小时后自动删除文件
+    setTimeout(() => {
+      const filePath = req.file.path;
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        console.log(`🗑️ 自动删除过期文件: ${req.file.filename}`);
+      }
+    }, 24 * 60 * 60 * 1000);
 
   } catch (error) {
     console.error('❌ 文件上传失败:', error);
-    console.error('📁 上传目录:', uploadsDir);
-    console.error('🌐 环境变量 VERCEL:', process.env.VERCEL);
-
     res.status(500).json({
       success: false,
-      error: error.message,
-      details: process.env.NODE_ENV === 'development' ? {
-        uploadsDir: uploadsDir,
-        environment: isVercel ? 'vercel' : 'local'
-      } : undefined
+      error: error.message
     });
   }
 });
 
 // 文件信息查询
 app.get('/api/upload/info/:fileId', (req, res) => {
+  const fileId = req.params.fileId;
+  const files = fs.readdirSync(uploadsDir);
+  const targetFile = files.find(file => file.includes(fileId));
+
+  if (!targetFile) {
+    return res.status(404).json({
+      success: false,
+      error: '文件不存在'
+    });
+  }
+
+  const filePath = path.join(uploadsDir, targetFile);
+  const stats = fs.statSync(filePath);
+  const baseUrl = req.protocol + '://' + req.get('host');
+
+  res.json({
+    success: true,
+    fileId: fileId,
+    filename: targetFile,
+    publicUrl: `${baseUrl}/files/${targetFile}`,
+    size: stats.size,
+    uploadTime: stats.birthtime.toISOString(),
+    exists: true
+  });
+});
+
+// ================================
+// 水印API接口
+// ================================
+
+// 创建水印任务
+app.post('/api/watermark/create', async (req, res) => {
   try {
-    const fileId = req.params.fileId;
+    console.log('🎨 收到创建水印任务请求:', req.body);
 
-    // 检查上传目录是否存在
-    if (!fs.existsSync(uploadsDir)) {
-      return res.status(404).json({
+    const { fileUrl, content, bizId } = req.body;
+
+    // 验证必需参数
+    if (!fileUrl || !content || !bizId) {
+      return res.status(400).json({
         success: false,
-        error: '上传目录不存在',
-        environment: isVercel ? 'vercel' : 'local'
+        error: '缺少必需参数: fileUrl, content, bizId'
       });
     }
 
-    const files = fs.readdirSync(uploadsDir);
-    const targetFile = files.find(file => file.includes(fileId));
-
-    if (!targetFile) {
-      return res.status(404).json({
-        success: false,
-        error: '文件不存在',
-        availableFiles: files.length,
-        environment: isVercel ? 'vercel' : 'local'
-      });
-    }
-
-    const filePath = path.join(uploadsDir, targetFile);
-    const stats = fs.statSync(filePath);
-    const baseUrl = req.protocol + '://' + req.get('host');
+    const result = await watermarkAPI.createWatermarkTask(fileUrl, content, bizId);
 
     res.json({
       success: true,
-      fileId: fileId,
-      filename: targetFile,
-      publicUrl: `${baseUrl}/files/${targetFile}`,
-      size: stats.size,
-      uploadTime: stats.birthtime.toISOString(),
-      exists: true,
-      environment: isVercel ? 'vercel' : 'local'
+      message: '水印任务创建成功',
+      ...result
     });
 
   } catch (error) {
-    console.error('❌ 文件信息查询失败:', error);
+    console.error('❌ 创建水印任务失败:', error);
     res.status(500).json({
       success: false,
-      error: error.message,
-      environment: isVercel ? 'vercel' : 'local'
+      error: error.message
     });
   }
 });
+
+// 查询任务状态
+app.get('/api/watermark/status/:taskId', async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    console.log('🔍 查询任务状态:', taskId);
+
+    if (!taskId) {
+      return res.status(400).json({
+        success: false,
+        error: '缺少任务ID'
+      });
+    }
+
+    const result = await watermarkAPI.queryTaskStatus(taskId);
+
+    res.json({
+      success: true,
+      taskId: taskId,
+      ...result
+    });
+
+  } catch (error) {
+    console.error('❌ 查询任务状态失败:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 创建水印提取任务
+app.post('/api/watermark/extract', async (req, res) => {
+  try {
+    console.log('🔍 收到创建水印提取任务请求:', req.body);
+
+    const { fileUrl, bizId } = req.body;
+
+    // 验证必需参数
+    if (!fileUrl || !bizId) {
+      return res.status(400).json({
+        success: false,
+        error: '缺少必需参数: fileUrl, bizId'
+      });
+    }
+
+    const result = await watermarkAPI.createExtractWatermarkTask(fileUrl, bizId);
+
+    res.json({
+      success: true,
+      message: '水印提取任务创建成功',
+      ...result
+    });
+
+  } catch (error) {
+    console.error('❌ 创建水印提取任务失败:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 水印API健康检查
+app.get('/api/watermark/health', async (req, res) => {
+  try {
+    const health = await watermarkAPI.healthCheck();
+    res.json({
+      success: true,
+      ...health
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ================================
+// 文件管理接口
+// ================================
 
 // 文件删除
 app.delete('/api/upload/:fileId', (req, res) => {
