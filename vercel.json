@@ -22,6 +22,9 @@
   ],
   "env": {
     "NODE_ENV": "production",
-    "VERCEL": "1"
+    "VERCEL": "1",
+    "WATERMARK_API_BASE_URL": "https://120.27.196.223",
+    "WATERMARK_ACCESS_KEY": "CnCZar6ZXKvqdBKMJ54vwNzO",
+    "WATERMARK_SECRET_KEY": "ajKx1uSye4wwa9T7srJQYlDOLK34NR0F1yDUDGgL"
   }
 }

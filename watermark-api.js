@@ -4,10 +4,16 @@ const fetch = require('node-fetch');
 
 class WatermarkAPIBackend {
   constructor() {
+    // 预发环境配置：本地用域名，Vercel用IP
+    const isProduction = process.env.NODE_ENV === 'production' || process.env.VERCEL;
+    const baseURL = isProduction
+      ? 'https://120.27.196.223'  // Vercel环境直接使用IP
+      : 'https://cs.sase.pre.eagleyun.com';  // 本地开发使用域名(需要配置hosts)
+
     this.config = {
-      baseURL: 'https://cs.sase.pre.eagleyun.com',
-      accessKey: 'CnCZar6ZXKvqdBKMJ54vwNzO',
-      secretKey: 'ajKx1uSye4wwa9T7srJQYlDOLK34NR0F1yDUDGgL',
+      baseURL: process.env.WATERMARK_API_BASE_URL || baseURL,
+      accessKey: process.env.WATERMARK_ACCESS_KEY || 'CnCZar6ZXKvqdBKMJ54vwNzO',
+      secretKey: process.env.WATERMARK_SECRET_KEY || 'ajKx1uSye4wwa9T7srJQYlDOLK34NR0F1yDUDGgL',
       endpoints: {
         addWatermarkTask: '/dlp/file_process/add_watermark_task',
         queryTask: '/dlp/file_process/task',
@@ -65,6 +71,11 @@ class WatermarkAPIBackend {
       'X-HMAC-ACCESS-KEY': this.config.accessKey,
       'X-HMAC-SIGNATURE': signature
     };
+
+    // 如果使用IP地址访问，添加Host头来解决SSL证书问题
+    if (this.config.baseURL.includes('120.27.196.223')) {
+      headers['Host'] = 'cs.sase.pre.eagleyun.com';
+    }
 
     console.log('🌐 发送API请求:');
     console.log('  - URL:', url);
