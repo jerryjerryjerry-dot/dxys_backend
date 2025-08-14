@@ -20,8 +20,12 @@ app.use(cors({
 // 解析JSON请求体
 app.use(express.json());
 
-// 创建上传目录
-const uploadsDir = path.join(__dirname, 'uploads');
+// 创建上传目录 - 在Vercel上使用临时目录
+const uploadsDir = process.env.VERCEL 
+  ? path.join('/tmp', 'uploads')  // Vercel环境使用/tmp目录
+  : path.join(__dirname, 'uploads');  // 本地开发使用uploads目录
+
+// 确保上传目录存在
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
@@ -89,8 +93,59 @@ app.get('/api/health', (req, res) => {
     status: 'running',
     timestamp: new Date().toISOString(),
     service: 'watermark-upload-backend',
-    version: '1.0.0'
+    version: '1.0.0',
+    environment: process.env.VERCEL ? 'vercel' : 'local',
+    uploadsDir: uploadsDir,
+    nodeEnv: process.env.NODE_ENV
   });
+});
+
+// 调试接口 - 检查文件系统状态
+app.get('/api/debug/filesystem', (req, res) => {
+  try {
+    const debugInfo = {
+      uploadsDir: uploadsDir,
+      uploadsDirExists: fs.existsSync(uploadsDir),
+      environment: process.env.VERCEL ? 'vercel' : 'local',
+      nodeEnv: process.env.NODE_ENV,
+      cwd: process.cwd(),
+      tmpDirExists: fs.existsSync('/tmp'),
+      tmpDirWritable: false
+    };
+
+    // 测试临时目录写入权限
+    try {
+      const testFile = path.join('/tmp', 'test-write.txt');
+      fs.writeFileSync(testFile, 'test');
+      fs.unlinkSync(testFile);
+      debugInfo.tmpDirWritable = true;
+    } catch (e) {
+      debugInfo.tmpWriteError = e.message;
+    }
+
+    // 测试上传目录
+    if (debugInfo.uploadsDirExists) {
+      try {
+        const files = fs.readdirSync(uploadsDir);
+        debugInfo.filesInUploads = files.length;
+        debugInfo.files = files.slice(0, 5); // 只显示前5个文件
+      } catch (e) {
+        debugInfo.readDirError = e.message;
+      }
+    }
+
+    res.json({
+      success: true,
+      debug: debugInfo
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
 });
 
 // 文件上传接口
@@ -107,10 +162,14 @@ app.post('/api/upload/public', upload.single('file'), (req, res) => {
     const baseUrl = req.protocol + '://' + req.get('host');
     const publicUrl = `${baseUrl}/files/${req.file.filename}`;
 
-    // 设置文件过期时间（24小时）
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    // 设置文件过期时间（在Vercel上，临时文件会在函数执行完毕后清理）
+    const expiresAt = process.env.VERCEL 
+      ? new Date(Date.now() + 60 * 60 * 1000).toISOString()  // Vercel上1小时过期
+      : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();  // 本地24小时过期
 
     console.log(`📤 文件上传成功: ${req.file.originalname} -> ${publicUrl}`);
+    console.log(`📁 存储位置: ${req.file.path}`);
+    console.log(`🌐 环境: ${process.env.VERCEL ? 'Vercel' : 'Local'}`);
 
     const result = {
       success: true,
@@ -120,55 +179,88 @@ app.post('/api/upload/public', upload.single('file'), (req, res) => {
       fileSize: req.file.size,  // 前端期望的字段名
       mimetype: req.file.mimetype,
       uploadTime: new Date().toISOString(),
-      expiresAt: expiresAt
+      expiresAt: expiresAt,
+      environment: process.env.VERCEL ? 'vercel' : 'local'
     };
 
     res.json(result);
 
-    // 24小时后自动删除文件
-    setTimeout(() => {
-      const filePath = req.file.path;
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        console.log(`🗑️ 自动删除过期文件: ${req.file.filename}`);
-      }
-    }, 24 * 60 * 60 * 1000);
+    // 只在非Vercel环境下设置定时删除（Vercel会自动清理临时文件）
+    if (!process.env.VERCEL) {
+      setTimeout(() => {
+        const filePath = req.file.path;
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          console.log(`🗑️ 自动删除过期文件: ${req.file.filename}`);
+        }
+      }, 24 * 60 * 60 * 1000);
+    }
 
   } catch (error) {
     console.error('❌ 文件上传失败:', error);
+    console.error('📁 上传目录:', uploadsDir);
+    console.error('🌐 环境变量 VERCEL:', process.env.VERCEL);
+    
     res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message,
+      details: process.env.NODE_ENV === 'development' ? {
+        uploadsDir: uploadsDir,
+        environment: process.env.VERCEL ? 'vercel' : 'local'
+      } : undefined
     });
   }
 });
 
 // 文件信息查询
 app.get('/api/upload/info/:fileId', (req, res) => {
-  const fileId = req.params.fileId;
-  const files = fs.readdirSync(uploadsDir);
-  const targetFile = files.find(file => file.includes(fileId));
+  try {
+    const fileId = req.params.fileId;
+    
+    // 检查上传目录是否存在
+    if (!fs.existsSync(uploadsDir)) {
+      return res.status(404).json({
+        success: false,
+        error: '上传目录不存在',
+        environment: process.env.VERCEL ? 'vercel' : 'local'
+      });
+    }
 
-  if (!targetFile) {
-    return res.status(404).json({
+    const files = fs.readdirSync(uploadsDir);
+    const targetFile = files.find(file => file.includes(fileId));
+
+    if (!targetFile) {
+      return res.status(404).json({
+        success: false,
+        error: '文件不存在',
+        availableFiles: files.length,
+        environment: process.env.VERCEL ? 'vercel' : 'local'
+      });
+    }
+
+    const filePath = path.join(uploadsDir, targetFile);
+    const stats = fs.statSync(filePath);
+    const baseUrl = req.protocol + '://' + req.get('host');
+
+    res.json({
+      success: true,
+      fileId: fileId,
+      filename: targetFile,
+      publicUrl: `${baseUrl}/files/${targetFile}`,
+      size: stats.size,
+      uploadTime: stats.birthtime.toISOString(),
+      exists: true,
+      environment: process.env.VERCEL ? 'vercel' : 'local'
+    });
+
+  } catch (error) {
+    console.error('❌ 文件信息查询失败:', error);
+    res.status(500).json({
       success: false,
-      error: '文件不存在'
+      error: error.message,
+      environment: process.env.VERCEL ? 'vercel' : 'local'
     });
   }
-
-  const filePath = path.join(uploadsDir, targetFile);
-  const stats = fs.statSync(filePath);
-  const baseUrl = req.protocol + '://' + req.get('host');
-
-  res.json({
-    success: true,
-    fileId: fileId,
-    filename: targetFile,
-    publicUrl: `${baseUrl}/files/${targetFile}`,
-    size: stats.size,
-    uploadTime: stats.birthtime.toISOString(),
-    exists: true
-  });
 });
 
 // 文件删除
