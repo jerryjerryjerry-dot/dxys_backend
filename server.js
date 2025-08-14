@@ -21,9 +21,18 @@ app.use(cors({
 app.use(express.json());
 
 // 创建上传目录 - 在Vercel上使用临时目录
-const uploadsDir = process.env.VERCEL 
+const isVercel = process.env.VERCEL || process.env.VERCEL_ENV || process.env.NOW_REGION;
+const uploadsDir = isVercel 
   ? path.join('/tmp', 'uploads')  // Vercel环境使用/tmp目录
   : path.join(__dirname, 'uploads');  // 本地开发使用uploads目录
+
+console.log('🌐 环境检测:', {
+  VERCEL: process.env.VERCEL,
+  VERCEL_ENV: process.env.VERCEL_ENV, 
+  NOW_REGION: process.env.NOW_REGION,
+  isVercel: isVercel,
+  uploadsDir: uploadsDir
+});
 
 // 确保上传目录存在
 if (!fs.existsSync(uploadsDir)) {
@@ -94,7 +103,7 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     service: 'watermark-upload-backend',
     version: '1.0.0',
-    environment: process.env.VERCEL ? 'vercel' : 'local',
+    environment: isVercel ? 'vercel' : 'local',
     uploadsDir: uploadsDir,
     nodeEnv: process.env.NODE_ENV
   });
@@ -106,7 +115,7 @@ app.get('/api/debug/filesystem', (req, res) => {
     const debugInfo = {
       uploadsDir: uploadsDir,
       uploadsDirExists: fs.existsSync(uploadsDir),
-      environment: process.env.VERCEL ? 'vercel' : 'local',
+      environment: isVercel ? 'vercel' : 'local',
       nodeEnv: process.env.NODE_ENV,
       cwd: process.cwd(),
       tmpDirExists: fs.existsSync('/tmp'),
@@ -162,14 +171,14 @@ app.post('/api/upload/public', upload.single('file'), (req, res) => {
     const baseUrl = req.protocol + '://' + req.get('host');
     const publicUrl = `${baseUrl}/files/${req.file.filename}`;
 
-    // 设置文件过期时间（在Vercel上，临时文件会在函数执行完毕后清理）
-    const expiresAt = process.env.VERCEL 
+        // 设置文件过期时间（在Vercel上，临时文件会在函数执行完毕后清理）
+    const expiresAt = isVercel 
       ? new Date(Date.now() + 60 * 60 * 1000).toISOString()  // Vercel上1小时过期
       : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();  // 本地24小时过期
 
     console.log(`📤 文件上传成功: ${req.file.originalname} -> ${publicUrl}`);
     console.log(`📁 存储位置: ${req.file.path}`);
-    console.log(`🌐 环境: ${process.env.VERCEL ? 'Vercel' : 'Local'}`);
+    console.log(`🌐 环境: ${isVercel ? 'Vercel' : 'Local'}`);
 
     const result = {
       success: true,
@@ -180,13 +189,13 @@ app.post('/api/upload/public', upload.single('file'), (req, res) => {
       mimetype: req.file.mimetype,
       uploadTime: new Date().toISOString(),
       expiresAt: expiresAt,
-      environment: process.env.VERCEL ? 'vercel' : 'local'
+      environment: isVercel ? 'vercel' : 'local'
     };
 
     res.json(result);
 
     // 只在非Vercel环境下设置定时删除（Vercel会自动清理临时文件）
-    if (!process.env.VERCEL) {
+    if (!isVercel) {
       setTimeout(() => {
         const filePath = req.file.path;
         if (fs.existsSync(filePath)) {
@@ -200,13 +209,13 @@ app.post('/api/upload/public', upload.single('file'), (req, res) => {
     console.error('❌ 文件上传失败:', error);
     console.error('📁 上传目录:', uploadsDir);
     console.error('🌐 环境变量 VERCEL:', process.env.VERCEL);
-    
+
     res.status(500).json({
       success: false,
       error: error.message,
       details: process.env.NODE_ENV === 'development' ? {
         uploadsDir: uploadsDir,
-        environment: process.env.VERCEL ? 'vercel' : 'local'
+        environment: isVercel ? 'vercel' : 'local'
       } : undefined
     });
   }
@@ -216,13 +225,13 @@ app.post('/api/upload/public', upload.single('file'), (req, res) => {
 app.get('/api/upload/info/:fileId', (req, res) => {
   try {
     const fileId = req.params.fileId;
-    
+
     // 检查上传目录是否存在
     if (!fs.existsSync(uploadsDir)) {
       return res.status(404).json({
         success: false,
         error: '上传目录不存在',
-        environment: process.env.VERCEL ? 'vercel' : 'local'
+        environment: isVercel ? 'vercel' : 'local'
       });
     }
 
@@ -234,7 +243,7 @@ app.get('/api/upload/info/:fileId', (req, res) => {
         success: false,
         error: '文件不存在',
         availableFiles: files.length,
-        environment: process.env.VERCEL ? 'vercel' : 'local'
+        environment: isVercel ? 'vercel' : 'local'
       });
     }
 
@@ -250,7 +259,7 @@ app.get('/api/upload/info/:fileId', (req, res) => {
       size: stats.size,
       uploadTime: stats.birthtime.toISOString(),
       exists: true,
-      environment: process.env.VERCEL ? 'vercel' : 'local'
+      environment: isVercel ? 'vercel' : 'local'
     });
 
   } catch (error) {
@@ -258,7 +267,7 @@ app.get('/api/upload/info/:fileId', (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message,
-      environment: process.env.VERCEL ? 'vercel' : 'local'
+      environment: isVercel ? 'vercel' : 'local'
     });
   }
 });
