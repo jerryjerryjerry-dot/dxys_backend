@@ -22,13 +22,13 @@ app.use(express.json());
 
 // 创建上传目录 - 在Vercel上使用临时目录
 const isVercel = process.env.VERCEL || process.env.VERCEL_ENV || process.env.NOW_REGION;
-const uploadsDir = isVercel 
+const uploadsDir = isVercel
   ? path.join('/tmp', 'uploads')  // Vercel环境使用/tmp目录
   : path.join(__dirname, 'uploads');  // 本地开发使用uploads目录
 
 console.log('🌐 环境检测:', {
   VERCEL: process.env.VERCEL,
-  VERCEL_ENV: process.env.VERCEL_ENV, 
+  VERCEL_ENV: process.env.VERCEL_ENV,
   NOW_REGION: process.env.NOW_REGION,
   isVercel: isVercel,
   uploadsDir: uploadsDir
@@ -171,8 +171,8 @@ app.post('/api/upload/public', upload.single('file'), (req, res) => {
     const baseUrl = req.protocol + '://' + req.get('host');
     const publicUrl = `${baseUrl}/files/${req.file.filename}`;
 
-        // 设置文件过期时间（在Vercel上，临时文件会在函数执行完毕后清理）
-    const expiresAt = isVercel 
+    // 设置文件过期时间（在Vercel上，临时文件会在函数执行完毕后清理）
+    const expiresAt = isVercel
       ? new Date(Date.now() + 60 * 60 * 1000).toISOString()  // Vercel上1小时过期
       : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();  // 本地24小时过期
 
